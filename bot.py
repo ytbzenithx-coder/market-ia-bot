@@ -30,7 +30,7 @@ def run_dummy_server():
     with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
         httpd.serve_forever()
 
-# --- ANALYSE IA SÉCURISÉE ---
+# --- ANALYSE IA BLINDÉE ---
 def analyze_market(symbol):
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -41,52 +41,83 @@ def analyze_market(symbol):
         data = response.json()
         if not data or len(data) < 50: return 50.2, 0
 
+        # Traitement des données
         df = pd.DataFrame(data, columns=['OT','O','H','L','C','V','CT','QV','NT','TB','TQ','I'])
-        df['C'] = df['C'].astype(float)
-        df['Returns'] = df['C'].pct_change().dropna()
-        X = df['Returns'].values[:-1].reshape(-1, 1)
-        y = (df['Returns'].values[1:] > 0).astype(int)
+        prices = df['C'].astype(float).values
         
-        if len(np.unique(y)) < 2: return 50.0, df['C'].iloc[-1]
+        # Calcul des variations (Returns)
+        returns = np.diff(prices) / prices[:-1]
+        
+        # Préparation des données pour la Régression Logistique
+        X = returns[:-1].reshape(-1, 1)
+        y = (returns[1:] > 0).astype(int)
+        
+        # Sécurité : il faut au moins deux classes (Up et Down) pour l'IA
+        if len(np.unique(y)) < 2: 
+            return 50.0, prices[-1]
 
-        model = LogisticRegression().fit(X, y)
-        prob = model.predict_proba(df['Returns'].values[-1].reshape(-1,1))[0][1] * 100
-        return round(prob, 1), df['C'].iloc[-1]
-    except: return 49.9, 0
+        # Utilisation du solver 'liblinear' pour la stabilité sur serveur Linux
+        model = LogisticRegression(solver='liblinear').fit(X, y)
+        
+        # Prédiction sur la dernière variation connue
+        last_val = np.array([[returns[-1]]])
+        prob = model.predict_proba(last_val)[0][1] * 100
+        
+        return round(prob, 1), prices[-1]
+    except Exception as e:
+        print(f"Erreur calcul {symbol}: {e}")
+        return 48.0, 0
 
 # --- COMMANDES ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nLe scan est en cours...")
+    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nLe système est synchronisé.")
 
 # --- CYCLE DE SCAN ---
 async def run_scan(app: Application):
     while True:
         start_time = datetime.now()
         rankings = []
+        alerts_sent = 0
+        
         for symbol in MARCHES:
             score, prix = analyze_market(symbol)
             rankings.append({"symbol": symbol, "score": score})
-            if score >= 70:
-                try: await app.bot.send_message(ADMIN_ID, f"🚨 **SIGNAL ÉLITE**\n{symbol}: {score}%")
+            
+            # Alerte si score réel >= 70%
+            if 70 <= score < 99:
+                alerts_sent += 1
+                try: 
+                    msg = f"🚨 **SIGNAL ÉLITE IA**\n{symbol} : {score}%\nPrix : {prix:.4f}"
+                    await app.bot.send_message(ADMIN_ID, msg)
                 except: pass
-            await asyncio.sleep(0.6) # Un peu plus lent pour la stabilité
+            await asyncio.sleep(0.6)
 
         rankings.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Rapport de Vie
         report = f"🛰 **RAPPORT DE VIE** ({datetime.now().strftime('%H:%M')})\n"
         report += "━━━━━━━━━━━━━━━━━━\n"
         for i, item in enumerate(rankings):
-            icon = "🟢" if item['score'] >= 65 else ("🟡" if item['score'] >= 55 else "⚪️")
-            report += f"{i+1}. {icon} `{item['symbol']}` : **{item['score']}%**\n"
+            # Gestion visuelle des codes erreurs
+            if item['score'] == 50.1: status = "🚫 IP BLOCK"
+            elif item['score'] == 50.2: status = "⚠️ DATA ERR"
+            elif item['score'] == 48.0: status = "❌ MATH ERR"
+            else:
+                icon = "🟢" if item['score'] >= 65 else ("🟡" if item['score'] >= 55 else "⚪️")
+                status = f"{icon} **{item['score']}%**"
+            
+            report += f"{i+1}. `{item['symbol']}` : {status}\n"
         
         try: await app.bot.send_message(ADMIN_ID, report, parse_mode='Markdown')
         except: pass
 
+        # Synchronisation 15 minutes
         duration = (datetime.now() - start_time).total_seconds()
         await asyncio.sleep(max(0, 900 - duration))
 
 async def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    # drop_pending_updates=True évite les conflits au lancement
+    
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     
@@ -94,9 +125,9 @@ async def main():
     async with app:
         await app.initialize()
         await app.start()
+        # drop_pending_updates=True pour éviter les conflits au reboot
         await app.updater.start_polling(drop_pending_updates=True)
         while True: await asyncio.sleep(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
-                
