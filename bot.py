@@ -22,149 +22,81 @@ MARCHES = [
     "FILUSDT", "LDOUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "XLMUSDT", "VETUSDT", "ICPUSDT"
 ]
 
-db = {
-    "clients": {8166605026: {"vip": True, "banni": False}},
-    "stats": {"trades": 47, "gagnes": 31, "perdus": 16, "profit": 142.50},
-    "historique": []
-}
-
 # --- SERVEUR DE MAINTIEN ---
 def run_dummy_server():
     PORT = int(os.environ.get("PORT", 8080))
-    handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", PORT), handler) as httpd:
+    class QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format, *args): return
+    with socketserver.TCPServer(("", PORT), QuietHandler) as httpd:
         httpd.serve_forever()
 
-# --- LOGIQUE IA AVEC DIAGNOSTIC ---
+# --- ANALYSE IA SÉCURISÉE ---
 def analyze_market(symbol):
     try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-        response = requests.get(url, timeout=5)
+        response = requests.get(url, headers=headers, timeout=10)
         
-        # Erreur 429 : Trop de requêtes (IP bloquée par Binance)
-        if response.status_code == 429:
-            return 50.1, 0
-            
+        if response.status_code != 200: return 50.1, 0
         data = response.json()
-        if not data or len(data) < 50:
-            return 50.2, 0 # Données vides
+        if not data or len(data) < 50: return 50.2, 0
 
         df = pd.DataFrame(data, columns=['OT','O','H','L','C','V','CT','QV','NT','TB','TQ','I'])
         df['C'] = df['C'].astype(float)
         df['Returns'] = df['C'].pct_change().dropna()
-        
         X = df['Returns'].values[:-1].reshape(-1, 1)
         y = (df['Returns'].values[1:] > 0).astype(int)
         
-        if len(np.unique(y)) < 2:
-            return 50.3, 0 # Marché sans mouvement
+        if len(np.unique(y)) < 2: return 50.0, df['C'].iloc[-1]
 
         model = LogisticRegression().fit(X, y)
         prob = model.predict_proba(df['Returns'].values[-1].reshape(-1,1))[0][1] * 100
         return round(prob, 1), df['C'].iloc[-1]
-    except Exception as e:
-        print(f"Erreur {symbol}: {e}")
-        return 49.9, 0 # Erreur réseau/code
+    except: return 49.9, 0
 
 # --- COMMANDES ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid not in db["clients"]: db["clients"][uid] = {"vip": False, "banni": False}
-    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nLe scan automatique est calé toutes les 15min.")
+    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nLe scan est en cours...")
 
-async def send_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if db["clients"].get(update.effective_user.id, {}).get("banni"): return
-    await update.message.reply_text("📊 Analyse manuelle...")
-    rankings = []
-    for s in MARCHES:
-        score, _ = analyze_market(s)
-        rankings.append({"s": s, "p": score})
-    rankings.sort(key=lambda x: x["p"], reverse=True)
-    msg = "🏆 **TOP 15 ACTUEL**\n"
-    for i, item in enumerate(rankings[:15]):
-        msg += f"{i+1}. `{item['s']}` : {item['p']}%\n"
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def admin_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    args = context.args
-    if not args:
-        await update.message.reply_text("🛠 /admin vip ID | /admin msg TEXTE")
-        return
-    action = args[0]
-    try:
-        if action == "vip":
-            target = int(args[1])
-            db["clients"][target] = {"vip": True, "banni": False}
-            await update.message.reply_text(f"✅ VIP ajouté.")
-        elif action == "msg":
-            txt = " ".join(args[1:])
-            for uid in db["clients"]:
-                try: await context.bot.send_message(uid, f"📢 **ANNONCE**\n\n{txt}")
-                except: pass
-    except: await update.message.reply_text("❌ Erreur.")
-
-# --- SCANNER SYNCHRONISÉ ---
+# --- CYCLE DE SCAN ---
 async def run_scan(app: Application):
     while True:
-        start_scan_time = datetime.now()
+        start_time = datetime.now()
         rankings = []
-        alerts_sent = 0
-        
         for symbol in MARCHES:
             score, prix = analyze_market(symbol)
-            rankings.append({"symbol": symbol, "score": score, "price": prix})
-            
-            # Envoi alerte si score réel >= 70
-            if score >= 70 and score < 80: # On évite les codes erreurs
-                alerts_sent += 1
-                msg = f"🚨 **SIGNAL ÉLITE IA**\nActif : {symbol}\nScore : {score}%\nPrix : {prix:.4f}"
-                for uid, data in db["clients"].items():
-                    if not data["banni"]:
-                        try: await app.bot.send_message(uid, msg, parse_mode='Markdown')
-                        except: pass
-            await asyncio.sleep(0.5)
+            rankings.append({"symbol": symbol, "score": score})
+            if score >= 70:
+                try: await app.bot.send_message(ADMIN_ID, f"🚨 **SIGNAL ÉLITE**\n{symbol}: {score}%")
+                except: pass
+            await asyncio.sleep(0.6) # Un peu plus lent pour la stabilité
 
         rankings.sort(key=lambda x: x["score"], reverse=True)
-        
-        report = f"🛰 **RAPPORT DE VIE CLOUD** ({datetime.now().strftime('%H:%M')})\n"
-        report += f"━━━━━━━━━━━━━━━━━━\n✅ Scan terminé. Alertes envoyées : {alerts_sent}\n\n📊 **TOP 30 :**\n"
-        
+        report = f"🛰 **RAPPORT DE VIE** ({datetime.now().strftime('%H:%M')})\n"
+        report += "━━━━━━━━━━━━━━━━━━\n"
         for i, item in enumerate(rankings):
-            # On affiche les codes erreurs s'ils existent
-            if item['score'] == 50.1: status = "🚫 IP BLOCK"
-            elif item['score'] == 50.2: status = "⚠️ DATA ERR"
-            elif item['score'] == 49.9: status = "❌ SYS ERR"
-            else:
-                icon = "🟢" if item['score'] >= 65 else ("🟡" if item['score'] >= 55 else "⚪️")
-                status = f"{icon} **{item['score']}%**"
-            
-            report += f"{i+1}. `{item['symbol']}` : {status}\n"
+            icon = "🟢" if item['score'] >= 65 else ("🟡" if item['score'] >= 55 else "⚪️")
+            report += f"{i+1}. {icon} `{item['symbol']}` : **{item['score']}%**\n"
         
         try: await app.bot.send_message(ADMIN_ID, report, parse_mode='Markdown')
         except: pass
 
-        # Synchronisation : on attend le reste des 15 minutes
-        duration = (datetime.now() - start_scan_time).total_seconds()
-        sleep_time = max(0, 900 - duration) 
-        print(f"Scan terminé en {duration}s. Pause de {sleep_time}s.")
-        await asyncio.sleep(sleep_time)
+        duration = (datetime.now() - start_time).total_seconds()
+        await asyncio.sleep(max(0, 900 - duration))
 
-# --- LANCEMENT ---
 async def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
+    # drop_pending_updates=True évite les conflits au lancement
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("top", send_top))
-    app.add_handler(CommandHandler("admin", admin_control))
     
     asyncio.create_task(run_scan(app))
     async with app:
         await app.initialize()
         await app.start()
-        print("Bot démarré !")
-        await app.updater.start_polling()
+        await app.updater.start_polling(drop_pending_updates=True)
         while True: await asyncio.sleep(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
+                
