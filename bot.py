@@ -54,7 +54,7 @@ def analyze_market(symbol):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid not in db["clients"]: db["clients"][uid] = {"vip": False, "banni": False}
-    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nScan actif sur 30 marchés.\nCommandes: /stats, /historique")
+    await update.message.reply_text("🚀 **MarketAI Cloud Online**\nCommandes: /top, /stats, /historique")
 
 async def send_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if db["clients"].get(update.effective_user.id, {}).get("banni"): return
@@ -65,10 +65,23 @@ async def send_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if db["clients"].get(update.effective_user.id, {}).get("banni"): return
     msg = "📜 **HISTORIQUE**\n"
-    if not db["historique"]: msg += "Aucun trade récent."
     for h in db["historique"][-5:]:
         msg += f"{h['pair']} | {h['score']}% | {h['res']}\n"
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg if db["historique"] else "Aucun trade récent.")
+
+async def send_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if db["clients"].get(update.effective_user.id, {}).get("banni"): return
+    await update.message.reply_text("📊 **Analyse des 30 marchés en cours...**")
+    rankings = []
+    for symbol in MARCHES:
+        score, _ = analyze_market(symbol)
+        rankings.append({"symbol": symbol, "score": score})
+    rankings.sort(key=lambda x: x["score"], reverse=True)
+    msg = "🏆 **TOP 10 PRÉCISION IA**\n━━━━━━━━━━━━\n"
+    for i, item in enumerate(rankings[:10]):
+        medal = "🥇" if i == 0 else ("🥈" if i == 1 else "🔹")
+        msg += f"{medal} `{item['symbol']}` : **{item['score']}%**\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
 
 # --- COMMANDES ADMIN ---
 async def admin_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,25 +90,18 @@ async def admin_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await update.message.reply_text("🛠 **ADMIN**\n`/admin vip ID`\n`/admin ban ID`\n`/admin msg TEXTE`", parse_mode='Markdown')
         return
-    
     action = args[0]
     try:
-        if action == "vip" and len(args) > 1:
+        if action == "vip":
             target = int(args[1])
-            if target not in db["clients"]: db["clients"][target] = {"vip": True, "banni": False}
-            db["clients"][target]["vip"] = True
-            await update.message.reply_text(f"✅ {target} est maintenant VIP.")
-        elif action == "ban" and len(args) > 1:
-            target = int(args[1])
-            if target not in db["clients"]: db["clients"][target] = {"vip": False, "banni": True}
-            db["clients"][target]["banni"] = True
-            await update.message.reply_text(f"🚫 {target} est banni.")
+            db["clients"][target] = {"vip": True, "banni": False}
+            await update.message.reply_text(f"✅ {target} est VIP.")
         elif action == "msg":
             txt = " ".join(args[1:])
             for uid in db["clients"]:
-                try: await context.bot.send_message(uid, f"📢 **ANNONCE ADMIN**\n\n{txt}")
+                try: await context.bot.send_message(uid, f"📢 **ANNONCE**\n\n{txt}")
                 except: pass
-    except: await update.message.reply_text("❌ Erreur de syntaxe.")
+    except: await update.message.reply_text("❌ Erreur.")
 
 # --- SCANNER ---
 async def run_scan(app: Application):
@@ -116,25 +122,20 @@ async def run_scan(app: Application):
 async def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
-    
-    # Enregistrement des commandes
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", send_stats))
     app.add_handler(CommandHandler("historique", send_history))
+    app.add_handler(CommandHandler("top", send_top))
     app.add_handler(CommandHandler("admin", admin_control))
     
     asyncio.create_task(run_scan(app))
-    
     async with app:
         await app.initialize()
         await app.start()
-        print("Bot en ligne avec Admin Commandes!")
+        print("Bot Ready!")
         await app.updater.start_polling()
         while True: await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): pass
-
+    asyncio.run(main())
 
