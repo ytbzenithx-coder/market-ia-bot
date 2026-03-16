@@ -15,11 +15,15 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 TOKEN = "8748658608:AAEBzyCtNKERBZ69HVnoP6CpQP1hPWdJwAI"
 ADMIN_ID = 8166605026
 
+# LISTE ÉLARGIE (50 MARCHÉS) - Mélange de Majors et Volatiles
 MARCHES = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "DOGEUSDT", 
     "AVAXUSDT", "LINKUSDT", "LTCUSDT", "MATICUSDT", "NEARUSDT", "ATOMUSDT", "SHIBUSDT",
     "EURUSDT", "GBPUSDT", "AUDUSDT", "PAXGUSDT", "TRXUSDT", "UNIUSDT", "BCHUSDT", 
-    "FILUSDT", "LDOUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "XLMUSDT", "VETUSDT", "ICPUSDT"
+    "FILUSDT", "LDOUSDT", "APTUSDT", "ARBUSDT", "OPUSDT", "XLMUSDT", "VETUSDT", "ICPUSDT",
+    "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FETUSDT", "RNDRUSDT", "TIAUSDT", "SEIUSDT", "INJUSDT",
+    "SUIUSDT", "STXUSDT", "ORDIUSDT", "GALAUSDT", "AGIXUSDT", "KASUSDT", "FLOKIUSDT", "JUPUSDT",
+    "PYTHUSDT", "DYDXUSDT", "IMXUSDT", "ROSEUSDT"
 ]
 
 def run_dummy_server():
@@ -34,23 +38,18 @@ def analyze_market(symbol):
         headers = {'User-Agent': 'Mozilla/5.0'}
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=100"
         response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code != 200: return 50.0, 0, 0
+        if response.status_code != 200: return 50.0, 0
         data = response.json()
         df = pd.DataFrame(data, columns=['OT','O','H','L','C','V','CT','QV','NT','TB','TQ','I'])
         prices = df['C'].astype(float).values
-        
-        # Calcul de la volatilité (ATR simplifié) pour le TP/SL
-        volatility = np.std(np.diff(prices)) 
-        
         returns = np.diff(prices) / prices[:-1]
         X = returns[:-1].reshape(-1, 1)
         y = (returns[1:] > 0).astype(int)
-        if len(np.unique(y)) < 2: return 50.0, prices[-1], volatility
-        
+        if len(np.unique(y)) < 2: return 50.0, prices[-1]
         model = LogisticRegression(solver='liblinear').fit(X, y)
         prob = model.predict_proba(np.array([[returns[-1]]]))[0][1] * 100
-        return round(prob, 1), prices[-1], volatility
-    except: return 50.0, 0, 0
+        return round(prob, 1), prices[-1]
+    except: return 50.0, 0
 
 async def run_scan(app: Application):
     while True:
@@ -58,18 +57,18 @@ async def run_scan(app: Application):
         rankings = []
         
         for symbol in MARCHES:
-            score, prix, vol = analyze_market(symbol)
-            rankings.append({"symbol": symbol, "score": score, "price": prix})
+            score, prix = analyze_market(symbol)
+            if prix > 0: rankings.append({"symbol": symbol, "score": score, "price": prix})
             
-            # --- LOGIQUE DE SIGNAL AVEC TP/SL ---
+            # --- ALERTE ÉLITE (65%) ---
             if score >= 65 or score <= 35:
                 is_buy = score >= 65
                 final_score = score if is_buy else round(100 - score, 1)
                 side = "🟢 BUY (LONG)" if is_buy else "🔴 SELL (SHORT)"
                 emoji = "🚀" if is_buy else "⚠️"
                 
-                # Calcul TP/SL (1.5% environ ajusté par volatilité)
-                move = prix * 0.015 
+                # Calcul TP/SL simplifié pour l'alerte
+                move = prix * 0.015
                 tp = prix + move if is_buy else prix - move
                 sl = prix - (move * 0.7) if is_buy else prix + (move * 0.7)
 
@@ -78,20 +77,21 @@ async def run_scan(app: Application):
                        f"💎 Actif : `{symbol}`\n"
                        f"🔥 Force : **{final_score}%**\n"
                        f"💵 Entrée : `{prix:.4f}`\n\n"
-                       f"🎯 **Objectif (TP) : `{tp:.4f}`**\n"
-                       f"🛡 **Sécurité (SL) : `{sl:.4f}`**\n"
-                       f"━━━━━━━━━━━━━━\n"
-                       f"⏱ Durée : **15-60 min**")
-                
+                       f"🎯 **TP : `{tp:.4f}`**\n"
+                       f"🛡 **SL : `{sl:.4f}`**\n"
+                       f"━━━━━━━━━━━━━━")
                 try: await app.bot.send_message(ADMIN_ID, msg, parse_mode='Markdown')
                 except: pass
             
-            await asyncio.sleep(0.6)
+            # Scan plus rapide (0.4s) pour couvrir les 50 marchés sans timeout
+            await asyncio.sleep(0.4)
 
-        # Rapport rapide
+        # Rapport de performance
         rankings.sort(key=lambda x: x["score"], reverse=True)
-        report = f"🛰 **RADAR 15M**\n"
-        report += f"Top 3 Buy : {rankings[0]['symbol']} ({rankings[0]['score']}%), {rankings[1]['symbol']}, {rankings[2]['symbol']}"
+        report = f"🛰 **RADAR IA (50 MARCHÉS)**\n"
+        report += f"Top 1 : {rankings[0]['symbol']} ({rankings[0]['score']}%)\n"
+        report += f"Top 2 : {rankings[1]['symbol']} ({rankings[1]['score']}%)\n"
+        report += f"Top 3 : {rankings[2]['symbol']} ({rankings[2]['score']}%)"
         try: await app.bot.send_message(ADMIN_ID, report)
         except: pass
         
@@ -100,12 +100,12 @@ async def run_scan(app: Application):
 async def main():
     threading.Thread(target=run_dummy_server, daemon=True).start()
     app = Application.builder().token(TOKEN).build()
+    # Utilisation de drop_pending_updates pour éviter l'erreur de conflit au démarrage
+    await app.initialize()
     asyncio.create_task(run_scan(app))
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        while True: await asyncio.sleep(1)
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    while True: await asyncio.sleep(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
