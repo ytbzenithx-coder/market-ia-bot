@@ -1,5 +1,8 @@
-python-telegram-bot
+ccxt
 pandas
-scikit-learn
-requests
 numpy
+scikit-learn
+flask
+python-dotenv
+gunicorn
+
