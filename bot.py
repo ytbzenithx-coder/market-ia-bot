@@ -2,90 +2,155 @@ import time
 import pandas as pd
 import numpy as np
 import requests
+from datetime import datetime
 from flask import Flask
 from threading import Thread
-from sklearn.linear_model import LogisticRegression
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION DIRECTE ---
 TOKEN = "8748658608:AAEBzyCtNKERBZ69HVnoP6CpQP1hPWdJwAI"
 CHAT_ID = "8166605026"
 
-# Les 15 meilleurs actifs pour ce bot
 ACTIFS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT",
     "PEPEUSDT", "WIFUSDT", "BONKUSDT", "DOGEUSDT", "SUIUSDT",
     "TIAUSDT", "OPUSDT", "ARBUSDT", "PYTHUSDT", "FETUSDT"
 ]
 
+COOLDOWN = 1800  # 30 min entre deux signaux pour le même actif
+RUN_TIME = 7 * 24 * 60 * 60  # Actif pendant 7 jours
+
+last_signal_time = {}
+daily_signals = {}
+total_signals = 0
+last_day = ""
+
 app = Flask('')
 
 @app.route('/')
 def home():
-    return "✅ BOT 15 ACTIFS EN LIGNE - PULSATION ACTIVE"
+    return "✅ BOT V3 FINAL - OPÉRATIONNEL"
 
-def send_telegram(message):
+# --- FONCTION ENVOI ---
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        requests.post(url, json={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=15)
+        requests.post(url, json={
+            "chat_id": CHAT_ID,
+            "text": msg,
+            "parse_mode": "Markdown"
+        }, timeout=10)
     except:
         pass
 
+# --- RÉCUPÉRATION DONNÉES ---
 def fetch_data(symbol):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=200"
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=100"
-        res = requests.get(url, timeout=10).json()
-        df = pd.DataFrame(res, columns=['ts', 'open', 'high', 'low', 'close', 'vol', 'close_ts', 'q_vol', 'trades', 'tb_base', 'tb_quote', 'ignore'])
+        data = requests.get(url, timeout=10).json()
+        df = pd.DataFrame(data, columns=['ts','open','high','low','close','vol','ct','qv','nt','tb','tq','i'])
         df['close'] = df['close'].astype(float)
         return df
     except:
         return None
 
-def predict_signal(df):
-    df['returns'] = df['close'].pct_change()
-    df.dropna(inplace=True)
-    X = np.array([df['returns'].iloc[i-5:i].values for i in range(5, len(df))])
-    y = np.where(df['returns'].iloc[5:].values > 0, 1, 0)
-    model = LogisticRegression().fit(X, y)
-    last_features = df['returns'].iloc[-5:].values.reshape(1, -1)
-    return model.predict_proba(last_features)[0][1]
+# --- CALCUL INDICATEURS ---
+def add_indicators(df):
+    # EMA 50 et 200 pour la tendance
+    df['ema50'] = df['close'].ewm(span=50).mean()
+    df['ema200'] = df['close'].ewm(span=200).mean()
 
-def monitor_loop():
-    time.sleep(15)
-    send_telegram("🚀 **DÉMARRAGE DU SCANNER (15 ACTIFS)**\nSurveillance active : BTC, SOL, PEPE, WIF...\nIntervalle : 15 min\n_Rapport de vie activé._")
+    # RSI pour la force du prix
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    df['rsi'] = 100 - (100 / (1 + (gain / loss)))
+
+    # MACD pour l'impulsion
+    ema12 = df['close'].ewm(span=12).mean()
+    ema26 = df['close'].ewm(span=26).mean()
+    df['macd'] = ema12 - ema26
+    df['macd_sig'] = df['macd'].ewm(span=9).mean()
+
+    # Momentum (vitesse sur 5 bougies)
+    df['momentum'] = df['close'].pct_change(5)
     
-    while True:
-        signals_found = 0
-        status_msg = "🛰 **RAPPORT DE VIE (15 MARCHÉS)**\n"
+    df.dropna(inplace=True)
+    return df
+
+# --- SYSTÈME DE SCORING ---
+def get_signal(df):
+    if len(df) < 10: return None
+    last = df.iloc[-1]
+    s_buy, s_sell = 0, 0
+
+    # Tendance (Poids lourd : 2 pts)
+    if last['ema50'] > last['ema200']: s_buy += 2
+    else: s_sell += 2
+
+    # RSI (1 pt)
+    if last['rsi'] < 45: s_buy += 1
+    elif last['rsi'] > 55: s_sell += 1
+
+    # MACD (1 pt)
+    if last['macd'] > last['macd_sig']: s_buy += 1
+    else: s_sell += 1
+
+    # Momentum (1 pt)
+    if last['momentum'] > 0: s_buy += 1
+    else: s_sell += 1
+
+    if s_buy >= 4: return "🟢 BUY"
+    if s_sell >= 4: return "🔴 SELL"
+    return None
+
+# --- BOUCLE PRINCIPALE ---
+def monitor():
+    global total_signals, last_day
+    time.sleep(15)
+    send_telegram("🚀 **BOT V3 DÉPLOYÉ**\nScoring 4/5 actif sur 15 marchés.\n_Prêt pour une session de 7 jours._")
+    
+    start_time = time.time()
+
+    while time.time() - start_time < RUN_TIME:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        if today not in daily_signals: daily_signals[today] = 0
+
+        # Bilan de la journée précédente
+        if last_day != "" and today != last_day:
+            send_telegram(f"📊 **BILAN {last_day}**\nOpportunités détectées : {daily_signals[last_day]}")
         
-        for crypto in ACTIFS:
-            df = fetch_data(crypto)
-            if df is not None:
-                prob = predict_signal(df)
-                price = df['close'].iloc[-1]
-                
-                # Signal d'achat ou vente si confiance > 65%
-                if prob >= 0.65 or prob <= 0.35:
-                    type_signal = "🟢 BUY" if prob >= 0.65 else "🔴 SELL"
-                    confiance = prob if prob >= 0.65 else (1 - prob)
-                    
-                    signal_alert = (f"🔥 **ALERTE SIGNAL**\n"
-                                   f"💎 Actif : `{crypto}`\n"
-                                   f"📈 Direction : *{type_signal}*\n"
-                                   f"⚡ Confiance : {confiance*100:.1f}%\n"
-                                   f"💵 Prix : `{price}`")
-                    send_telegram(signal_alert)
-                    signals_found += 1
-                
-                # On ajoute les 5 premiers actifs au rapport pour pas que le message soit trop long
-                if crypto in ACTIFS[:5]:
-                    status_msg += f"• {crypto} : `{price}`\n"
-        
-        if signals_found == 0:
-            send_telegram(status_msg + "\n_Aucun signal fort. Je continue de surveiller..._")
+        last_day = today
+        signals = []
+        now = time.time()
+
+        for symbol in ACTIFS:
+            df = fetch_data(symbol)
+            if df is None: continue
             
-        time.sleep(900) # Attente de 15 minutes
+            df = add_indicators(df)
+            signal = get_signal(df)
+            price = df['close'].iloc[-1]
+
+            if signal:
+                l_time = last_signal_time.get(symbol, 0)
+                if now - l_time >= COOLDOWN:
+                    last_signal_time[symbol] = now
+                    total_signals += 1
+                    daily_signals[today] += 1
+                    signals.append((symbol, signal, price))
+
+        if signals:
+            msg = "🔥 **SIGNAL DÉTECTÉ**\n\n"
+            for s in signals:
+                msg += f"💎 `{s[0]}` → *{s[1]}*\nPrix: `{s[2]}`\n\n"
+            send_telegram(msg)
+        else:
+            # Petit signal de vie toutes les 15 min
+            send_telegram(f"🛰 **Scan OK** ({today})\nAucun signal 4/5 détecté.")
+
+        time.sleep(900) # Attente 15 minutes
 
 if __name__ == "__main__":
-    t = Thread(target=monitor_loop)
+    t = Thread(target=monitor)
     t.start()
     app.run(host='0.0.0.0', port=8080)
