@@ -1,8 +1,7 @@
-pandas
-numpy
-requests
-scikit-learn
 flask
+pandas
+requests
 gunicorn
+numpy
 
 
